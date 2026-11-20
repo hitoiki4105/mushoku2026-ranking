@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>無色透名祭4 ランキング記録</title>
+<style>
+  body { font-family: sans-serif; max-width: 1000px; margin: 1rem auto; padding: 0 1rem; }
+  #tabs button { margin: 0 4px 4px 0; padding: 6px 10px; cursor: pointer; }
+  #tabs button.active { background: #333; color: #fff; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+  th, td { border-bottom: 1px solid #ccc; padding: 4px 6px; text-align: left; font-size: 14px; }
+  td.num { text-align: right; }
+  .wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>無色透名祭4参加曲 上位100</h1>
+<p>
+  <label>取得日 <select id="date"></select></label>
+  <span id="meta"></span>
+</p>
+<div id="tabs"></div>
+<div class="wrap">
+<table>
+  <thead><tr>
+    <th>順位</th><th>曲名</th><th>投稿日時</th><th>再生数</th>
+    <th>いいね！</th><th>コメント</th><th>マイリスト</th><th>最終コメント</th>
+  </tr></thead>
+  <tbody id="body"></tbody>
+</table>
+</div>
+
+<script>
+// ★ここを自分のWorkerのURLに書き換えてください（末尾の / は付けない）
+const WORKER = 'https://mushoku-ranking.（あなたのサブドメイン）.workers.dev';
+
+const TABS = [
+  ['startTime', '投稿日時'], ['viewCounter', '再生数'], ['lastCommentTime', 'コメント日時'],
+  ['likeCounter', 'いいね！数'], ['commentCounter', 'コメント数'], ['mylistCounter', 'マイリスト登録数'],
+];
+let data = null, current = 'viewCounter';
+
+const fmtDate = s => s ? new Date(s).toLocaleString('ja-JP') : '';
+const fmtNum = n => (n ?? '').toLocaleString?.() ?? '';
+
+function td(text, cls) {
+  const e = document.createElement('td');
+  e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+
+function renderTabs() {
+  const box = document.getElementById('tabs');
+  box.replaceChildren();
+  for (const [key, label] of TABS) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (key === current) b.className = 'active';
+    b.onclick = () => { current = key; renderTabs(); renderTable(); };
+    box.appendChild(b);
+  }
+}
+
+function renderTable() {
+  const body = document.getElementById('body');
+  body.replaceChildren();
+  if (!data) return;
+  for (const v of data.lists[current] ?? []) {
+    const tr = document.createElement('tr');
+    tr.appendChild(td(v.rank, 'num'));
+    const t = document.createElement('td');
+    const a = document.createElement('a');
+    a.href = 'https://nico.ms/' + encodeURIComponent(v.contentId);
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = v.title;
+    t.appendChild(a);
+    tr.appendChild(t);
+    tr.appendChild(td(fmtDate(v.startTime)));
+    tr.appendChild(td(fmtNum(v.viewCounter), 'num'));
+    tr.appendChild(td(fmtNum(v.likeCounter), 'num'));
+    tr.appendChild(td(fmtNum(v.commentCounter), 'num'));
+    tr.appendChild(td(fmtNum(v.mylistCounter), 'num'));
+    tr.appendChild(td(fmtDate(v.lastCommentTime)));
+    body.appendChild(tr);
+  }
+}
+
+async function load(date) {
+  const res = await fetch(WORKER + '/data' + (date ? '?date=' + date : ''));
+  data = await res.json();
+  document.getElementById('meta').textContent =
+    '（スナップショット: ' + fmtDate(data.snapshot) + ' 時点）';
+  renderTable();
+}
+
+async function init() {
+  const dates = await (await fetch(WORKER + '/list')).json();
+  const sel = document.getElementById('date');
+  for (const d of dates) {
+    const o = document.createElement('option');
+    o.value = d; o.textContent = d;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => load(sel.value);
+  renderTabs();
+  await load(dates[0]);
+}
+init();
+</script>
+</body>
+</html>
