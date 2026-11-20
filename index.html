@@ -5,30 +5,51 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>無色透名祭4 ランキング記録</title>
 <style>
-  body { font-family: sans-serif; max-width: 1000px; margin: 1rem auto; padding: 0 1rem; }
-  #tabs button { margin: 0 4px 4px 0; padding: 6px 10px; cursor: pointer; }
-  #tabs button.active { background: #333; color: #fff; }
+  body { font-family: sans-serif; max-width: 1100px; margin: 1rem auto; padding: 0 1rem; }
+  #views button, #tabs button { margin: 0 4px 4px 0; padding: 6px 10px; cursor: pointer; }
+  #views button.active, #tabs button.active { background: #333; color: #fff; }
+  #tabs { margin-bottom: 8px; }
   table { border-collapse: collapse; width: 100%; margin-top: 8px; }
   th, td { border-bottom: 1px solid #ccc; padding: 4px 6px; text-align: left; font-size: 14px; }
   td.num { text-align: right; }
   .wrap { overflow-x: auto; }
+  #chartBox { position: relative; height: 640px; margin-top: 8px; }
+  .note { color: #666; font-size: 13px; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
 </head>
 <body>
 <h1>無色透名祭4参加曲 上位1000</h1>
-<p>
-  <label>取得日 <select id="date"></select></label>
-  <span id="meta"></span>
-</p>
+
+<div id="views"></div>
 <div id="tabs"></div>
-<div class="wrap">
-<table>
-  <thead><tr>
-    <th>順位</th><th>作品ID</th><th>曲名</th><th>投稿日時</th><th>再生数</th>
-    <th>いいね！</th><th>コメント</th><th>マイリスト</th><th>最終コメント</th>
-  </tr></thead>
-  <tbody id="body"></tbody>
-</table>
+
+<!-- 表 -->
+<div id="tableView">
+  <p>
+    <label>取得日 <select id="date"></select></label>
+    <span id="meta"></span>
+  </p>
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th>順位</th><th>作品ID</th><th>曲名</th><th>投稿日時</th><th>再生数</th>
+        <th>いいね！</th><th>コメント</th><th>マイリスト</th><th>最終コメント</th>
+      </tr></thead>
+      <tbody id="body"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- グラフ -->
+<div id="graphView" hidden>
+  <p>
+    <label>縦軸 <select id="metric"></select></label>
+    <label><input type="checkbox" id="logScale"> 対数目盛</label>
+    <span id="graphMsg"></span>
+  </p>
+  <p class="note">1本の線が1曲です。線をクリックすると動画ページが開きます。取得日ごとのデータが2日分以上たまると、点が線でつながります。</p>
+  <div id="chartBox"><canvas id="chart"></canvas></div>
 </div>
 
 <script>
@@ -38,10 +59,36 @@ const TABS = [
   ['startTime', '投稿日時'], ['viewCounter', '再生数'], ['lastCommentTime', 'コメント日時'],
   ['likeCounter', 'いいね！数'], ['commentCounter', 'コメント数'], ['mylistCounter', 'マイリスト登録数'],
 ];
-let data = null, current = 'viewCounter';
+// グラフの縦軸の選択肢
+const METRICS = [
+  ['rank', '順位'], ['viewCounter', '再生数'], ['likeCounter', 'いいね！数'],
+  ['commentCounter', 'コメント数'], ['mylistCounter', 'マイリスト登録数'],
+];
+// タブごとの縦軸の初期値（投稿日時・コメント日時は数値ではないので順位）
+const DEFAULT_METRIC = {
+  startTime: 'rank', viewCounter: 'viewCounter', lastCommentTime: 'rank',
+  likeCounter: 'likeCounter', commentCounter: 'commentCounter', mylistCounter: 'mylistCounter',
+};
+
+let dates = [];        // 取得日の一覧（新しい順）
+const cache = {};      // 取得日 -> データ（Promise）
+let data = null;       // 表に表示中のデータ
+let current = 'viewCounter';
+let view = 'table';
+let chart = null;
 
 const fmtDate = s => s ? new Date(s).toLocaleString('ja-JP') : '';
 const fmtNum = n => (n ?? '').toLocaleString?.() ?? '';
+const $ = id => document.getElementById(id);
+
+function getData(date) {
+  if (!cache[date]) {
+    cache[date] = fetch(WORKER + '/data?date=' + date)
+      .then(r => { if (!r.ok) throw new Error(date + ': ' + r.status); return r.json(); })
+      .catch(e => { delete cache[date]; throw e; });
+  }
+  return cache[date];
+}
 
 function td(text, cls) {
   const e = document.createElement('td');
@@ -50,20 +97,46 @@ function td(text, cls) {
   return e;
 }
 
+/* ---------- 表示切り替え ---------- */
+function renderViews() {
+  const box = $('views');
+  box.replaceChildren();
+  for (const [key, label] of [['table', '表'], ['graph', 'グラフ']]) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (key === view) b.className = 'active';
+    b.onclick = () => {
+      view = key;
+      $('tableView').hidden = view !== 'table';
+      $('graphView').hidden = view !== 'graph';
+      renderViews();
+      if (view === 'graph') renderGraph();
+    };
+    box.appendChild(b);
+  }
+}
+
 function renderTabs() {
-  const box = document.getElementById('tabs');
+  const box = $('tabs');
   box.replaceChildren();
   for (const [key, label] of TABS) {
     const b = document.createElement('button');
     b.textContent = label;
     if (key === current) b.className = 'active';
-    b.onclick = () => { current = key; renderTabs(); renderTable(); };
+    b.onclick = () => {
+      current = key;
+      $('metric').value = DEFAULT_METRIC[key];
+      renderTabs();
+      renderTable();
+      if (view === 'graph') renderGraph();
+    };
     box.appendChild(b);
   }
 }
 
+/* ---------- 表 ---------- */
 function renderTable() {
-  const body = document.getElementById('body');
+  const body = $('body');
   body.replaceChildren();
   if (!data) return;
   for (const v of data.lists[current] ?? []) {
@@ -89,23 +162,134 @@ function renderTable() {
 }
 
 async function load(date) {
-  const res = await fetch(WORKER + '/data' + (date ? '?date=' + date : ''));
-  data = await res.json();
-  document.getElementById('meta').textContent =
-    '（スナップショット: ' + fmtDate(data.snapshot) + ' 時点）';
+  data = await getData(date);
+  $('meta').textContent = '（スナップショット: ' + fmtDate(data.snapshot) + ' 時点）';
   renderTable();
 }
 
+/* ---------- グラフ ---------- */
+let graphToken = 0;
+
+async function renderGraph() {
+  const token = ++graphToken;
+  const msg = $('graphMsg');
+  const asc = [...dates].sort(); // 古い順（横軸の左から右）
+  if (!asc.length) { msg.textContent = 'データがありません'; return; }
+
+  // 全日分のデータを4日ずつ読み込む
+  let n = 0;
+  for (let i = 0; i < asc.length; i += 4) {
+    msg.textContent = `読み込み中… ${n}/${asc.length}日`;
+    const batch = asc.slice(i, i + 4);
+    await Promise.all(batch.map(getData));
+    n += batch.length;
+    if (token !== graphToken) return; // 途中で操作された場合は中断
+  }
+  msg.textContent = `${asc.length}日分のデータ`;
+  await drawChart(asc);
+}
+
+async function drawChart(asc) {
+  const metric = $('metric').value;
+  const metricLabel = METRICS.find(m => m[0] === metric)[1];
+  const useLog = $('logScale').checked && metric !== 'rank';
+  const all = await Promise.all(asc.map(getData));
+
+  // 曲（作品ID）ごとに、日付順の値の配列を作る
+  const series = new Map();
+  all.forEach((d, di) => {
+    for (const r of d.lists[current] ?? []) {
+      let s = series.get(r.contentId);
+      if (!s) {
+        s = { title: r.title, values: new Array(asc.length).fill(null) };
+        series.set(r.contentId, s);
+      }
+      s.title = r.title;
+      s.values[di] = r[metric] ?? null;
+    }
+  });
+
+  const datasets = [];
+  let i = 0;
+  for (const [id, s] of series) {
+    const color = `hsl(${(i * 137.508) % 360}, 70%, 45%)`;
+    datasets.push({
+      label: s.title,
+      contentId: id,
+      data: s.values,
+      borderColor: color,
+      backgroundColor: color,
+      borderWidth: 1,
+      pointRadius: 2,
+      pointHoverRadius: 5,
+      spanGaps: true,
+      tension: 0,
+    });
+    i++;
+  }
+
+  if (chart) chart.destroy();
+  chart = new Chart($('chart'), {
+    type: 'line',
+    data: { labels: asc, datasets },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: true },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => `${c.dataset.contentId} ${c.dataset.label}: ${c.formattedValue}`,
+          },
+        },
+      },
+      scales: {
+        x: { title: { display: true, text: '取得日' } },
+        y: {
+          type: useLog ? 'logarithmic' : 'linear',
+          reverse: metric === 'rank',
+          ...(metric === 'rank' ? { min: 1 } : {}),
+          title: { display: true, text: metricLabel },
+        },
+      },
+      onClick: (e, els) => {
+        if (!els.length) return;
+        const id = datasets[els[0].datasetIndex].contentId;
+        window.open('https://nico.ms/' + encodeURIComponent(id), '_blank', 'noopener');
+      },
+    },
+  });
+}
+
+/* ---------- 初期化 ---------- */
 async function init() {
-  const dates = await (await fetch(WORKER + '/list')).json();
-  const sel = document.getElementById('date');
+  // 縦軸の選択肢
+  for (const [key, label] of METRICS) {
+    const o = document.createElement('option');
+    o.value = key; o.textContent = label;
+    $('metric').appendChild(o);
+  }
+  $('metric').value = DEFAULT_METRIC[current];
+  $('metric').onchange = () => { if (view === 'graph') renderGraph(); };
+  $('logScale').onchange = () => { if (view === 'graph') renderGraph(); };
+
+  renderViews();
+  renderTabs();
+
+  dates = await (await fetch(WORKER + '/list')).json();
+  if (!dates.length) {
+    $('meta').textContent = 'まだデータがありません';
+    return;
+  }
+  const sel = $('date');
   for (const d of dates) {
     const o = document.createElement('option');
     o.value = d; o.textContent = d;
     sel.appendChild(o);
   }
   sel.onchange = () => load(sel.value);
-  renderTabs();
   await load(dates[0]);
 }
 init();
