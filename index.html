@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>無色透名祭4参加曲 上位100</h1>
+<h1>無色透名祭4参加曲 上位1000</h1>
 <p>
   <label>取得日 <select id="date"></select></label>
   <span id="meta"></span>
@@ -24,7 +24,7 @@
 <div class="wrap">
 <table>
   <thead><tr>
-    <th>順位</th><th>曲名</th><th>投稿日時</th><th>再生数</th>
+    <th>順位</th><th>作品ID</th><th>曲名</th><th>投稿日時</th><th>再生数</th>
     <th>いいね！</th><th>コメント</th><th>マイリスト</th><th>最終コメント</th>
   </tr></thead>
   <tbody id="body"></tbody>
@@ -32,7 +32,6 @@
 </div>
 
 <script>
-// ★ここを自分のWorkerのURLに書き換えてください（末尾の / は付けない）
 const WORKER = 'https://mushoku-ranking.hitoiki4105.workers.dev';
 
 const TABS = [
@@ -70,6 +69,7 @@ function renderTable() {
   for (const v of data.lists[current] ?? []) {
     const tr = document.createElement('tr');
     tr.appendChild(td(v.rank, 'num'));
+    tr.appendChild(td(v.contentId));
     const t = document.createElement('td');
     const a = document.createElement('a');
     a.href = 'https://nico.ms/' + encodeURIComponent(v.contentId);
