@@ -9,6 +9,8 @@
   #views button, #tabs button, #pager button { margin: 0 4px 4px 0; padding: 6px 10px; cursor: pointer; }
   #views button.active, #tabs button.active { background: #333; color: #fff; }
   #tabs { margin-bottom: 8px; }
+  #rangeBox { margin: 8px 0; }
+  #rangeBox label { margin-right: 12px; white-space: nowrap; cursor: pointer; }
   table { border-collapse: collapse; width: 100%; margin-top: 8px; }
   th, td { border-bottom: 1px solid #ccc; padding: 4px 6px; text-align: left; font-size: 14px; }
   td.num { text-align: right; }
@@ -23,7 +25,7 @@
 
 <div id="views"></div>
 <div id="tabs"></div>
-<p><label>表示範囲 <select id="range"></select></label></p>
+<div id="rangeBox">表示範囲：<span id="rangeRadios"></span></div>
 
 <!-- 表 -->
 <div id="tableView">
@@ -35,7 +37,7 @@
   <div class="wrap">
     <table>
       <thead><tr>
-        <th>順位</th><th id="thBottom" hidden>最下位から</th><th>作品ID</th><th>曲名</th><th>投稿日時</th><th>再生数</th>
+        <th>順位</th><th>作品ID</th><th>曲名</th><th>投稿日時</th><th>再生数</th>
         <th>いいね！</th><th>コメント</th><th>マイリスト</th><th>最終コメント</th>
       </tr></thead>
       <tbody id="body"></tbody>
@@ -50,13 +52,14 @@
     <label><input type="checkbox" id="logScale"> 対数目盛</label>
     <span id="graphMsg"></span>
   </p>
-  <p class="note">1本の線が1曲です。線をクリックすると動画ページが開きます。取得日ごとのデータが2日分以上たまると、点が線でつながります。「全曲」など本数が多い範囲は、表示に時間がかかることがあります。</p>
+  <p class="note">1本の線が1曲です。点をクリックすると動画ページが開きます。取得日ごとのデータが2日分以上たまると、点が線でつながります。「全曲」など本数が多い範囲は、表示に時間がかかることがあります。</p>
   <div id="chartBox"><canvas id="chart"></canvas></div>
 </div>
 
 <script>
 const WORKER = 'https://mushoku-ranking.hitoiki4105.workers.dev';
 const PAGE_SIZE = 200;
+const BLOCK = 1111; // 表示範囲の刻み
 
 const TABS = [
   ['viewCounter', '再生数'], ['likeCounter', 'いいね！数'],
@@ -72,18 +75,14 @@ const DEFAULT_METRIC = {
   viewCounter: 'viewCounter', likeCounter: 'likeCounter',
   commentCounter: 'commentCounter', mylistCounter: 'mylistCounter',
 };
-// 表示範囲
-const RANGES = [
-  ['top100', '上位100'], ['top500', '上位500'], ['top1111', '上位1111'],
-  ['bottom1111', '下位1111'], ['all', '全曲'],
-];
 
 let dates = [];        // 取得日の一覧（新しい順）
 const cache = {};      // 取得日 -> データ（Promise）
 let data = null;       // 表に表示中のデータ
 let current = 'viewCounter';
 let view = 'table';
-let range = 'top1111';
+let range = 0;         // 表示範囲: ブロック番号（0始まり）または 'all'
+let maxSongs = 0;      // これまでに読み込んだ中で最も多い曲数
 let page = 0;
 let chart = null;
 
@@ -106,11 +105,22 @@ function normalize(raw) {
   return { legacy: true, lists: raw.lists ?? {}, totalCount: raw.totalCount, snapshot: raw.snapshot, memo: {} };
 }
 
+function updateMax(d) {
+  const n = d.legacy
+    ? Math.max(0, ...Object.values(d.lists).map(l => l.length))
+    : d.rows.length;
+  if (n > maxSongs) {
+    maxSongs = n;
+    renderRangeRadios();
+  }
+}
+
 function getData(date) {
   if (!cache[date]) {
     cache[date] = fetch(WORKER + '/data?date=' + date)
       .then(r => { if (!r.ok) throw new Error(date + ': ' + r.status); return r.json(); })
       .then(normalize)
+      .then(d => { updateMax(d); return d; })
       .catch(e => { delete cache[date]; throw e; });
   }
   return cache[date];
@@ -124,14 +134,7 @@ function fullList(d, key) {
     list = d.lists[key] ?? [];
   } else {
     const arr = [...d.rows];
-    if (key === 'startTime' || key === 'lastCommentTime') {
-      arr.sort((a, b) => {
-        const x = a[key] ?? '', y = b[key] ?? '';
-        return x < y ? 1 : x > y ? -1 : 0; // 新しい順
-      });
-    } else {
-      arr.sort((a, b) => (b[key] ?? -1) - (a[key] ?? -1)); // 多い順
-    }
+    arr.sort((a, b) => (b[key] ?? -1) - (a[key] ?? -1)); // 多い順
     list = arr.map((r, i) => ({ ...r, rank: i + 1 }));
   }
   d.memo[key] = list;
@@ -139,13 +142,8 @@ function fullList(d, key) {
 }
 
 function applyRange(list, r) {
-  switch (r) {
-    case 'top100': return list.slice(0, 100);
-    case 'top500': return list.slice(0, 500);
-    case 'top1111': return list.slice(0, 1111);
-    case 'bottom1111': return list.slice(-1111);
-    default: return list;
-  }
+  if (r === 'all') return list;
+  return list.slice(r * BLOCK, (r + 1) * BLOCK);
 }
 
 function td(text, cls) {
@@ -193,6 +191,40 @@ function renderTabs() {
   }
 }
 
+// 表示範囲のラジオボタン（1111位ずつ。曲数に応じて増える）
+function renderRangeRadios() {
+  const box = $('rangeRadios');
+  box.replaceChildren();
+  const blocks = Math.max(1, Math.ceil(maxSongs / BLOCK));
+  if (range !== 'all' && range >= blocks) range = 0;
+
+  const items = [];
+  for (let i = 0; i < blocks; i++) {
+    const start = i * BLOCK + 1;
+    let end = (i + 1) * BLOCK;
+    if (maxSongs > 0) end = Math.min(end, maxSongs);
+    items.push([i, `${start.toLocaleString()}〜${end.toLocaleString()}位`]);
+  }
+  items.push(['all', '全曲']);
+
+  for (const [val, label] of items) {
+    const l = document.createElement('label');
+    const r = document.createElement('input');
+    r.type = 'radio';
+    r.name = 'range';
+    r.value = String(val);
+    r.checked = String(range) === String(val);
+    r.onchange = () => {
+      range = val;
+      page = 0;
+      renderTable();
+      if (view === 'graph') renderGraph();
+    };
+    l.append(r, ' ' + label);
+    box.appendChild(l);
+  }
+}
+
 function renderPager(pages, total) {
   const box = $('pager');
   box.replaceChildren();
@@ -218,17 +250,13 @@ function renderTable() {
   body.replaceChildren();
   if (!data) { $('pager').replaceChildren(); return; }
 
-  const full = fullList(data, current);
-  const list = applyRange(full, range);
+  const list = applyRange(fullList(data, current), range);
   const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
   if (page >= pages) page = pages - 1;
-  const showBottom = range === 'bottom1111';
-  $('thBottom').hidden = !showBottom;
 
   for (const v of list.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)) {
     const tr = document.createElement('tr');
     tr.appendChild(td(v.rank, 'num'));
-    if (showBottom) tr.appendChild(td(full.length - v.rank + 1, 'num'));
     tr.appendChild(td(v.contentId));
     const t = document.createElement('td');
     const a = document.createElement('a');
@@ -324,6 +352,13 @@ async function drawChart(asc, token) {
     i++;
   }
 
+  // 順位の縦軸は、選んだ範囲に合わせる
+  let rankAxis = {};
+  if (metric === 'rank' && range !== 'all') {
+    const max = maxSongs > 0 ? Math.min((range + 1) * BLOCK, maxSongs) : (range + 1) * BLOCK;
+    rankAxis = { min: range * BLOCK + 1, max };
+  }
+
   if (chart) chart.destroy();
   chart = new Chart($('chart'), {
     type: 'line',
@@ -346,7 +381,7 @@ async function drawChart(asc, token) {
         y: {
           type: useLog ? 'logarithmic' : 'linear',
           reverse: metric === 'rank',
-          ...(metric === 'rank' && range.startsWith('top') ? { min: 1 } : {}),
+          ...rankAxis,
           title: { display: true, text: metricLabel },
         },
       },
@@ -370,19 +405,7 @@ async function init() {
   $('metric').onchange = () => { if (view === 'graph') renderGraph(); };
   $('logScale').onchange = () => { if (view === 'graph') renderGraph(); };
 
-  for (const [key, label] of RANGES) {
-    const o = document.createElement('option');
-    o.value = key; o.textContent = label;
-    $('range').appendChild(o);
-  }
-  $('range').value = range;
-  $('range').onchange = () => {
-    range = $('range').value;
-    page = 0;
-    renderTable();
-    if (view === 'graph') renderGraph();
-  };
-
+  renderRangeRadios();
   renderViews();
   renderTabs();
 
