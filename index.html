@@ -6,7 +6,7 @@
 <title>無色透名祭4 ランキング記録</title>
 <style>
   body { font-family: sans-serif; max-width: 1100px; margin: 1rem auto; padding: 0 1rem; }
-  #views button, #tabs button { margin: 0 4px 4px 0; padding: 6px 10px; cursor: pointer; }
+  #views button, #tabs button, #pager button { margin: 0 4px 4px 0; padding: 6px 10px; cursor: pointer; }
   #views button.active, #tabs button.active { background: #333; color: #fff; }
   #tabs { margin-bottom: 8px; }
   table { border-collapse: collapse; width: 100%; margin-top: 8px; }
@@ -19,10 +19,11 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
 </head>
 <body>
-<h1>無色透名祭4参加曲 上位1111</h1>
+<h1>無色透名祭4参加曲 ランキング記録</h1>
 
 <div id="views"></div>
 <div id="tabs"></div>
+<p><label>表示範囲 <select id="range"></select></label></p>
 
 <!-- 表 -->
 <div id="tableView">
@@ -30,10 +31,11 @@
     <label>取得日 <select id="date"></select></label>
     <span id="meta"></span>
   </p>
+  <div id="pager"></div>
   <div class="wrap">
     <table>
       <thead><tr>
-        <th>順位</th><th>作品ID</th><th>曲名</th><th>投稿日時</th><th>再生数</th>
+        <th>順位</th><th id="thBottom" hidden>最下位から</th><th>作品ID</th><th>曲名</th><th>投稿日時</th><th>再生数</th>
         <th>いいね！</th><th>コメント</th><th>マイリスト</th><th>最終コメント</th>
       </tr></thead>
       <tbody id="body"></tbody>
@@ -48,12 +50,13 @@
     <label><input type="checkbox" id="logScale"> 対数目盛</label>
     <span id="graphMsg"></span>
   </p>
-  <p class="note">1本の線が1曲です。線をクリックすると動画ページが開きます。取得日ごとのデータが2日分以上たまると、点が線でつながります。</p>
+  <p class="note">1本の線が1曲です。線をクリックすると動画ページが開きます。取得日ごとのデータが2日分以上たまると、点が線でつながります。「全曲」など本数が多い範囲は、表示に時間がかかることがあります。</p>
   <div id="chartBox"><canvas id="chart"></canvas></div>
 </div>
 
 <script>
 const WORKER = 'https://mushoku-ranking.hitoiki4105.workers.dev';
+const PAGE_SIZE = 200;
 
 const TABS = [
   ['startTime', '投稿日時'], ['viewCounter', '再生数'], ['lastCommentTime', 'コメント日時'],
@@ -69,25 +72,80 @@ const DEFAULT_METRIC = {
   startTime: 'rank', viewCounter: 'viewCounter', lastCommentTime: 'rank',
   likeCounter: 'likeCounter', commentCounter: 'commentCounter', mylistCounter: 'mylistCounter',
 };
+// 表示範囲
+const RANGES = [
+  ['top100', '上位100'], ['top500', '上位500'], ['top1111', '上位1111'],
+  ['bottom1111', '下位1111'], ['all', '全曲'],
+];
 
 let dates = [];        // 取得日の一覧（新しい順）
 const cache = {};      // 取得日 -> データ（Promise）
 let data = null;       // 表に表示中のデータ
 let current = 'viewCounter';
 let view = 'table';
+let range = 'top1111';
+let page = 0;
 let chart = null;
 
 const fmtDate = s => s ? new Date(s).toLocaleString('ja-JP') : '';
 const fmtNum = n => (n ?? '').toLocaleString?.() ?? '';
 const $ = id => document.getElementById(id);
 
+/* ---------- データの読み込みと並べ替え ---------- */
+function normalize(raw) {
+  if (raw.rows) {
+    // 新形式: 全曲のデータ。重複する作品IDを除く
+    const seen = new Set();
+    const rows = [];
+    for (const r of raw.rows) {
+      if (!seen.has(r.contentId)) { seen.add(r.contentId); rows.push(r); }
+    }
+    return { legacy: false, rows, totalCount: raw.totalCount, snapshot: raw.snapshot, memo: {} };
+  }
+  // 旧形式: 上位のみ保存されている日
+  return { legacy: true, lists: raw.lists ?? {}, totalCount: raw.totalCount, snapshot: raw.snapshot, memo: {} };
+}
+
 function getData(date) {
   if (!cache[date]) {
     cache[date] = fetch(WORKER + '/data?date=' + date)
       .then(r => { if (!r.ok) throw new Error(date + ': ' + r.status); return r.json(); })
+      .then(normalize)
       .catch(e => { delete cache[date]; throw e; });
   }
   return cache[date];
+}
+
+// 指定したソート順で全曲を並べ、順位を付ける
+function fullList(d, key) {
+  if (d.memo[key]) return d.memo[key];
+  let list;
+  if (d.legacy) {
+    list = d.lists[key] ?? [];
+  } else {
+    const arr = [...d.rows];
+    if (key === 'startTime' || key === 'lastCommentTime') {
+      arr.sort((a, b) => {
+        const x = a[key] ?? '', y = b[key] ?? '';
+        return x < y ? 1 : x > y ? -1 : 0; // 新しい順
+      });
+    } else {
+      arr.sort((a, b) => (b[key] ?? -1) - (a[key] ?? -1)); // 多い順
+    }
+    list = arr.map((r, i) => ({ ...r, rank: i + 1 }));
+  }
+  d.memo[key] = list;
+  return list;
+}
+
+function applyRange(list, r) {
+  switch (r) {
+    case 'top100': return list.slice(0, 100);
+    case 'top500': return list.slice(0, 500);
+    case 'top1111': return list.slice(0, 1111);
+    case 'bottom1111': return list.slice(-1111);
+    default: return list;
+  }
 }
 
 function td(text, cls) {
@@ -97,7 +155,7 @@ function td(text, cls) {
   return e;
 }
 
-/* ---------- 表示切り替え ---------- */
+/* ---------- ボタン類 ---------- */
 function renderViews() {
   const box = $('views');
   box.replaceChildren();
@@ -125,6 +183,7 @@ function renderTabs() {
     if (key === current) b.className = 'active';
     b.onclick = () => {
       current = key;
+      page = 0;
       $('metric').value = DEFAULT_METRIC[key];
       renderTabs();
       renderTable();
@@ -134,14 +193,42 @@ function renderTabs() {
   }
 }
 
+function renderPager(pages, total) {
+  const box = $('pager');
+  box.replaceChildren();
+  const mk = (label, p, disabled) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.disabled = disabled;
+    b.onclick = () => { page = p; renderTable(); };
+    return b;
+  };
+  box.appendChild(mk('最初', 0, page === 0));
+  box.appendChild(mk('前へ', page - 1, page === 0));
+  box.appendChild(mk('次へ', page + 1, page >= pages - 1));
+  box.appendChild(mk('最後', pages - 1, page >= pages - 1));
+  const s = document.createElement('span');
+  s.textContent = ` ${page + 1} / ${pages} ページ（${total.toLocaleString()}曲中 ${PAGE_SIZE}曲ずつ表示）`;
+  box.appendChild(s);
+}
+
 /* ---------- 表 ---------- */
 function renderTable() {
   const body = $('body');
   body.replaceChildren();
-  if (!data) return;
-  for (const v of data.lists[current] ?? []) {
+  if (!data) { $('pager').replaceChildren(); return; }
+
+  const full = fullList(data, current);
+  const list = applyRange(full, range);
+  const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  if (page >= pages) page = pages - 1;
+  const showBottom = range === 'bottom1111';
+  $('thBottom').hidden = !showBottom;
+
+  for (const v of list.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)) {
     const tr = document.createElement('tr');
     tr.appendChild(td(v.rank, 'num'));
+    if (showBottom) tr.appendChild(td(full.length - v.rank + 1, 'num'));
     tr.appendChild(td(v.contentId));
     const t = document.createElement('td');
     const a = document.createElement('a');
@@ -159,11 +246,18 @@ function renderTable() {
     tr.appendChild(td(fmtDate(v.lastCommentTime)));
     body.appendChild(tr);
   }
+  renderPager(pages, list.length);
 }
 
 async function load(date) {
   data = await getData(date);
-  $('meta').textContent = '（スナップショット: ' + fmtDate(data.snapshot) + ' 時点）';
+  page = 0;
+  let t = '（スナップショット: ' + fmtDate(data.snapshot) + ' 時点';
+  if (data.totalCount) t += '／該当 ' + data.totalCount.toLocaleString() + ' 曲';
+  if (!data.legacy) t += '／取得済み ' + data.rows.length.toLocaleString() + ' 曲';
+  t += '）';
+  if (data.legacy) t += ' ※この日は旧形式（上位のみ）のデータです';
+  $('meta').textContent = t;
   renderTable();
 }
 
@@ -185,20 +279,21 @@ async function renderGraph() {
     n += batch.length;
     if (token !== graphToken) return; // 途中で操作された場合は中断
   }
-  msg.textContent = `${asc.length}日分のデータ`;
-  await drawChart(asc);
+  await drawChart(asc, token);
 }
 
-async function drawChart(asc) {
+async function drawChart(asc, token) {
   const metric = $('metric').value;
   const metricLabel = METRICS.find(m => m[0] === metric)[1];
   const useLog = $('logScale').checked && metric !== 'rank';
   const all = await Promise.all(asc.map(getData));
+  if (token !== graphToken) return;
 
   // 曲（作品ID）ごとに、日付順の値の配列を作る
   const series = new Map();
   all.forEach((d, di) => {
-    for (const r of d.lists[current] ?? []) {
+    const list = applyRange(fullList(d, current), range);
+    for (const r of list) {
       let s = series.get(r.contentId);
       if (!s) {
         s = { title: r.title, values: new Array(asc.length).fill(null) };
@@ -208,6 +303,7 @@ async function drawChart(asc) {
       s.values[di] = r[metric] ?? null;
     }
   });
+  $('graphMsg').textContent = `${asc.length}日分のデータ／${series.size.toLocaleString()}曲`;
 
   const datasets = [];
   let i = 0;
@@ -250,7 +346,7 @@ async function drawChart(asc) {
         y: {
           type: useLog ? 'logarithmic' : 'linear',
           reverse: metric === 'rank',
-          ...(metric === 'rank' ? { min: 1 } : {}),
+          ...(metric === 'rank' && range.startsWith('top') ? { min: 1 } : {}),
           title: { display: true, text: metricLabel },
         },
       },
@@ -265,7 +361,6 @@ async function drawChart(asc) {
 
 /* ---------- 初期化 ---------- */
 async function init() {
-  // 縦軸の選択肢
   for (const [key, label] of METRICS) {
     const o = document.createElement('option');
     o.value = key; o.textContent = label;
@@ -274,6 +369,19 @@ async function init() {
   $('metric').value = DEFAULT_METRIC[current];
   $('metric').onchange = () => { if (view === 'graph') renderGraph(); };
   $('logScale').onchange = () => { if (view === 'graph') renderGraph(); };
+
+  for (const [key, label] of RANGES) {
+    const o = document.createElement('option');
+    o.value = key; o.textContent = label;
+    $('range').appendChild(o);
+  }
+  $('range').value = range;
+  $('range').onchange = () => {
+    range = $('range').value;
+    page = 0;
+    renderTable();
+    if (view === 'graph') renderGraph();
+  };
 
   renderViews();
   renderTabs();
