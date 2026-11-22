@@ -59,18 +59,18 @@ const WORKER = 'https://mushoku-ranking.hitoiki4105.workers.dev';
 const PAGE_SIZE = 200;
 
 const TABS = [
-  ['startTime', '投稿日時'], ['viewCounter', '再生数'], ['lastCommentTime', 'コメント日時'],
-  ['likeCounter', 'いいね！数'], ['commentCounter', 'コメント数'], ['mylistCounter', 'マイリスト登録数'],
+  ['viewCounter', '再生数'], ['likeCounter', 'いいね！数'],
+  ['commentCounter', 'コメント数'], ['mylistCounter', 'マイリスト登録数'],
 ];
 // グラフの縦軸の選択肢
 const METRICS = [
   ['rank', '順位'], ['viewCounter', '再生数'], ['likeCounter', 'いいね！数'],
   ['commentCounter', 'コメント数'], ['mylistCounter', 'マイリスト登録数'],
 ];
-// タブごとの縦軸の初期値（投稿日時・コメント日時は数値ではないので順位）
+// タブごとの縦軸の初期値
 const DEFAULT_METRIC = {
-  startTime: 'rank', viewCounter: 'viewCounter', lastCommentTime: 'rank',
-  likeCounter: 'likeCounter', commentCounter: 'commentCounter', mylistCounter: 'mylistCounter',
+  viewCounter: 'viewCounter', likeCounter: 'likeCounter',
+  commentCounter: 'commentCounter', mylistCounter: 'mylistCounter',
 };
 // 表示範囲
 const RANGES = [
