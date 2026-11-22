@@ -9,8 +9,8 @@
   #views button, #tabs button, #pager button { margin: 0 4px 4px 0; padding: 6px 10px; cursor: pointer; }
   #views button.active, #tabs button.active { background: #333; color: #fff; }
   #tabs { margin-bottom: 8px; }
-  #rangeBox { margin: 8px 0; }
-  #rangeBox label { margin-right: 12px; white-space: nowrap; cursor: pointer; }
+  .rangeRow { margin: 8px 0; }
+  .rangeRow label { margin-right: 12px; white-space: nowrap; cursor: pointer; }
   table { border-collapse: collapse; width: 100%; margin-top: 8px; }
   th, td { border-bottom: 1px solid #ccc; padding: 4px 6px; text-align: left; font-size: 14px; }
   td.num { text-align: right; }
@@ -25,7 +25,8 @@
 
 <div id="views"></div>
 <div id="tabs"></div>
-<div id="rangeBox">表示範囲：<span id="rangeRadios"></span></div>
+<div class="rangeRow">表示範囲：<span id="rangeRadios"></span></div>
+<div class="rangeRow">表示範囲：<span id="growthRadio"></span> <span id="rangeNote" class="note"></span></div>
 
 <!-- 表 -->
 <div id="tableView">
@@ -39,6 +40,8 @@
       <thead><tr>
         <th>順位</th><th>作品ID</th><th>曲名</th><th>投稿日時</th><th>再生数</th>
         <th>いいね！</th><th>コメント</th><th>マイリスト</th><th>最終コメント</th>
+        <th class="gcol" hidden>再生数増加率（前日→当日）</th>
+        <th class="gcol" hidden>再生数増加率（前々日→前日）</th>
       </tr></thead>
       <tbody id="body"></tbody>
     </table>
@@ -52,7 +55,7 @@
     <label><input type="checkbox" id="logScale"> 対数目盛</label>
     <span id="graphMsg"></span>
   </p>
-  <p class="note">1本の線が1曲です。点をクリックすると動画ページが開きます。取得日ごとのデータが2日分以上たまると、点が線でつながります。「全曲」など本数が多い範囲は、表示に時間がかかることがあります。</p>
+  <p class="note">1本の線が1曲です。点をクリックすると動画ページが開きます。取得日ごとのデータが2日分以上たまると、点が線でつながります。「全曲」など本数が多い範囲は、表示に時間がかかることがあります。「増加割合増加曲」は、最新の取得日で増加率が増えた曲だけを、全期間の線で表示します。</p>
   <div id="chartBox"><canvas id="chart"></canvas></div>
 </div>
 
@@ -78,16 +81,19 @@ const DEFAULT_METRIC = {
 
 let dates = [];        // 取得日の一覧（新しい順）
 const cache = {};      // 取得日 -> データ（Promise）
+const growthCache = {}; // 取得日 -> 増加割合増加曲の情報（Promise）
 let data = null;       // 表に表示中のデータ
+let dataDate = null;   // 表に表示中のデータの取得日
 let current = 'viewCounter';
 let view = 'table';
-let range = 0;         // 表示範囲: ブロック番号（0始まり）または 'all'
+let range = 0;         // 表示範囲: ブロック番号（0始まり）、'all'、'growth'（増加割合増加曲）
 let maxSongs = 0;      // これまでに読み込んだ中で最も多い曲数
 let page = 0;
 let chart = null;
 
 const fmtDate = s => s ? new Date(s).toLocaleString('ja-JP') : '';
 const fmtNum = n => (n ?? '').toLocaleString?.() ?? '';
+const fmtPct = x => (x * 100).toFixed(1) + '%';
 const $ = id => document.getElementById(id);
 
 /* ---------- データの読み込みと並べ替え ---------- */
@@ -146,6 +152,46 @@ function applyRange(list, r) {
   return list.slice(r * BLOCK, (r + 1) * BLOCK);
 }
 
+/* ---------- 増加割合増加曲 ---------- */
+// 作品ID -> 再生数 の対応表（その日に載っている全曲分）
+function viewMap(d) {
+  if (d.viewMap) return d.viewMap;
+  const m = new Map();
+  if (d.legacy) {
+    for (const list of Object.values(d.lists)) {
+      for (const r of list) if (r.viewCounter != null) m.set(r.contentId, r.viewCounter);
+    }
+  } else {
+    for (const r of d.rows) if (r.viewCounter != null) m.set(r.contentId, r.viewCounter);
+  }
+  d.viewMap = m;
+  return m;
+}
+
+// 指定した取得日について、前日比の再生数増加率が、その前日の増加率より大きくなった曲を調べる
+// 戻り値: Map(作品ID -> {r1: 前々日→前日の増加率, r2: 前日→当日の増加率})。比べられる日数がなければ null
+function growthInfo(dateStr) {
+  if (!growthCache[dateStr]) {
+    growthCache[dateStr] = (async () => {
+      const asc = [...dates].sort();
+      const i = asc.indexOf(dateStr);
+      if (i < 2) return null;
+      const [d0, d1, d2] = await Promise.all([asc[i - 2], asc[i - 1], asc[i]].map(getData));
+      const m0 = viewMap(d0), m1 = viewMap(d1), m2 = viewMap(d2);
+      const out = new Map();
+      for (const [id, v2] of m2) {
+        const v1 = m1.get(id), v0 = m0.get(id);
+        if (v0 == null || v1 == null || v0 <= 0 || v1 <= 0) continue;
+        const r1 = (v1 - v0) / v0;
+        const r2 = (v2 - v1) / v1;
+        if (r2 > r1) out.set(id, { r1, r2 });
+      }
+      return out;
+    })().catch(e => { delete growthCache[dateStr]; throw e; });
+  }
+  return growthCache[dateStr];
+}
+
 function td(text, cls) {
   const e = document.createElement('td');
   e.textContent = text;
@@ -191,38 +237,41 @@ function renderTabs() {
   }
 }
 
-// 表示範囲のラジオボタン（1111位ずつ。曲数に応じて増える）
+function makeRadio(val, label) {
+  const l = document.createElement('label');
+  const r = document.createElement('input');
+  r.type = 'radio';
+  r.name = 'range'; // 2つの行で同じ名前にして、どちらか1つだけ選べるようにする
+  r.value = String(val);
+  r.checked = String(range) === String(val);
+  r.onchange = () => {
+    range = val;
+    page = 0;
+    renderTable();
+    if (view === 'graph') renderGraph();
+  };
+  l.append(r, ' ' + label);
+  return l;
+}
+
+// 表示範囲のラジオボタン（1111位ずつ。曲数に応じて増える）と、増加割合増加曲
 function renderRangeRadios() {
   const box = $('rangeRadios');
   box.replaceChildren();
   const blocks = Math.max(1, Math.ceil(maxSongs / BLOCK));
-  if (range !== 'all' && range >= blocks) range = 0;
+  if (typeof range === 'number' && range >= blocks) range = 0;
 
-  const items = [];
   for (let i = 0; i < blocks; i++) {
     const start = i * BLOCK + 1;
     let end = (i + 1) * BLOCK;
     if (maxSongs > 0) end = Math.min(end, maxSongs);
-    items.push([i, `${start.toLocaleString()}〜${end.toLocaleString()}位`]);
+    box.appendChild(makeRadio(i, `${start.toLocaleString()}〜${end.toLocaleString()}位`));
   }
-  items.push(['all', '全曲']);
+  box.appendChild(makeRadio('all', '全曲'));
 
-  for (const [val, label] of items) {
-    const l = document.createElement('label');
-    const r = document.createElement('input');
-    r.type = 'radio';
-    r.name = 'range';
-    r.value = String(val);
-    r.checked = String(range) === String(val);
-    r.onchange = () => {
-      range = val;
-      page = 0;
-      renderTable();
-      if (view === 'graph') renderGraph();
-    };
-    l.append(r, ' ' + label);
-    box.appendChild(l);
-  }
+  const g = $('growthRadio');
+  g.replaceChildren();
+  g.appendChild(makeRadio('growth', '増加割合増加曲'));
 }
 
 function renderPager(pages, total) {
@@ -245,15 +294,42 @@ function renderPager(pages, total) {
 }
 
 /* ---------- 表 ---------- */
-function renderTable() {
-  const body = $('body');
-  body.replaceChildren();
-  if (!data) { $('pager').replaceChildren(); return; }
+let tableToken = 0;
 
-  const list = applyRange(fullList(data, current), range);
+async function renderTable() {
+  const token = ++tableToken;
+  const body = $('body');
+  if (!data) {
+    body.replaceChildren();
+    $('pager').replaceChildren();
+    return;
+  }
+
+  const growthMode = range === 'growth';
+  let list = [];
+  let info = null;
+  $('rangeNote').textContent = '';
+
+  if (growthMode) {
+    $('rangeNote').textContent = '計算中…';
+    info = await growthInfo(dataDate);
+    if (token !== tableToken) return; // 途中で操作された場合は中断
+    if (!info) {
+      $('rangeNote').textContent = '増加割合を比べるには、この取得日を含めて3日分以上のデータが必要です。';
+    } else {
+      list = fullList(data, current).filter(v => info.has(v.contentId));
+      $('rangeNote').textContent = `（前日比の再生数増加率が、その前日の増加率より増えた曲：${list.length.toLocaleString()}曲）`;
+    }
+  } else {
+    list = applyRange(fullList(data, current), range);
+  }
+
+  for (const th of document.querySelectorAll('.gcol')) th.hidden = !growthMode;
+
   const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
   if (page >= pages) page = pages - 1;
 
+  body.replaceChildren();
   for (const v of list.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)) {
     const tr = document.createElement('tr');
     tr.appendChild(td(v.rank, 'num'));
@@ -272,6 +348,11 @@ function renderTable() {
     tr.appendChild(td(fmtNum(v.commentCounter), 'num'));
     tr.appendChild(td(fmtNum(v.mylistCounter), 'num'));
     tr.appendChild(td(fmtDate(v.lastCommentTime)));
+    if (growthMode) {
+      const g = info.get(v.contentId);
+      tr.appendChild(td(fmtPct(g.r2), 'num'));
+      tr.appendChild(td(fmtPct(g.r1), 'num'));
+    }
     body.appendChild(tr);
   }
   renderPager(pages, list.length);
@@ -279,6 +360,7 @@ function renderTable() {
 
 async function load(date) {
   data = await getData(date);
+  dataDate = date;
   page = 0;
   let t = '（スナップショット: ' + fmtDate(data.snapshot) + ' 時点';
   if (data.totalCount) t += '／該当 ' + data.totalCount.toLocaleString() + ' 曲';
@@ -317,10 +399,24 @@ async function drawChart(asc, token) {
   const all = await Promise.all(asc.map(getData));
   if (token !== graphToken) return;
 
+  // 増加割合増加曲: 最新の取得日で条件を満たした曲だけを対象にする
+  let allowed = null;
+  if (range === 'growth') {
+    allowed = await growthInfo(asc[asc.length - 1]);
+    if (token !== graphToken) return;
+    if (!allowed) {
+      $('graphMsg').textContent = '増加割合を比べるには、3日分以上のデータが必要です。';
+      if (chart) { chart.destroy(); chart = null; }
+      return;
+    }
+  }
+
   // 曲（作品ID）ごとに、日付順の値の配列を作る
   const series = new Map();
   all.forEach((d, di) => {
-    const list = applyRange(fullList(d, current), range);
+    const list = allowed
+      ? fullList(d, current).filter(r => allowed.has(r.contentId))
+      : applyRange(fullList(d, current), range);
     for (const r of list) {
       let s = series.get(r.contentId);
       if (!s) {
@@ -352,9 +448,9 @@ async function drawChart(asc, token) {
     i++;
   }
 
-  // 順位の縦軸は、選んだ範囲に合わせる
+  // 順位の縦軸は、選んだ範囲（1111位ずつ）に合わせる
   let rankAxis = {};
-  if (metric === 'rank' && range !== 'all') {
+  if (metric === 'rank' && typeof range === 'number') {
     const max = maxSongs > 0 ? Math.min((range + 1) * BLOCK, maxSongs) : (range + 1) * BLOCK;
     rankAxis = { min: range * BLOCK + 1, max };
   }
